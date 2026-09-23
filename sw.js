@@ -2,7 +2,9 @@
 // (иначе новое появлялось бы у читателя со второго захода), при обрыве — из кэша. Шрифты
 // Google — сначала из кэша: они не меняются.
 
-const CACHE = 'news-v1';
+// Новое имя кэша при смене иконок или оболочки: при включении работник удаляет прежний кэш,
+// и телефон не показывает старую иконку из него.
+const CACHE = 'news-v2';
 const SHELL = [
     './',
     'index.html',
@@ -10,8 +12,8 @@ const SHELL = [
     'app.js',
     'parse.js',
     'manifest.webmanifest',
-    'icons/icon-192.png',
-    'icons/apple-touch-icon.png',
+    'icons/htv-192.png',
+    'icons/htv-apple-180.png',
 ];
 
 self.addEventListener('install', event => {
