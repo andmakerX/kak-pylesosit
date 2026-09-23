@@ -4,7 +4,7 @@
 
 // Новое имя кэша при смене иконок или оболочки: при включении работник удаляет прежний кэш,
 // и телефон не показывает старую иконку из него.
-const CACHE = 'news-v2';
+const CACHE = 'news-v3';
 const SHELL = [
     './',
     'index.html',
@@ -17,8 +17,18 @@ const SHELL = [
 ];
 
 self.addEventListener('install', event => {
-    event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
+    const shell = SHELL.map(path => new Request(path, { cache: 'reload' }));
+    event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(shell)).then(() => self.skipWaiting()));
 });
+
+// Сверка с сайтом при каждом открытии. GitHub Pages разрешает браузеру держать файлы
+// 10 минут, и без сверки выложенное (новая иконка, правка страницы) доходило до читателя с
+// опозданием. Неизменившийся файл сайт подтверждает коротким ответом, без повторной загрузки.
+function fresh(request) {
+    return request.mode === 'navigate'
+        ? fetch(request.url, { cache: 'no-cache', credentials: 'same-origin' })
+        : fetch(request, { cache: 'no-cache' });
+}
 
 self.addEventListener('activate', event => {
     event.waitUntil(
@@ -36,7 +46,7 @@ self.addEventListener('fetch', event => {
 
     if (url.origin === self.location.origin) {
         event.respondWith(
-            fetch(request)
+            fresh(request)
                 .then(response => {
                     if (response.ok) {
                         const copy = response.clone();
