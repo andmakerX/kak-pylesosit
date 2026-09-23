@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Как пылесосить — дневник разработки</title>
+    <meta name="description" content="Что нового в игре «Как пылесосить»: каждое обновление сразу после того, как оно сделано.">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="theme-color" content="#16181e">
+    <meta name="color-scheme" content="light dark">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Пылесосить">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@600;800&display=swap">
+    <link rel="stylesheet" href="style.css">
+    <script type="module" src="app.js"></script>
+</head>
+<body>
+    <div class="statusbar" aria-hidden="true"></div>
+
+    <header class="masthead">
+        <div class="motes" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="masthead-inner">
+            <div class="brand">
+                <img class="brand-icon" src="icons/icon-192.png" alt="" width="64" height="64">
+                <div class="brand-text">
+                    <h1 class="title">Как пылесосить</h1>
+                    <p class="tagline">Дневник разработки</p>
+                </div>
+                <button class="icon-button refresh" type="button" aria-label="Обновить ленту" title="Обновить ленту">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
+                </button>
+            </div>
+
+            <div class="stats" aria-live="polite">
+                <div class="stat"><b data-stat="added">—</b><span data-label="added">новинок</span></div>
+                <div class="stat"><b data-stat="fixed">—</b><span data-label="fixed">исправлений</span></div>
+                <div class="stat"><b data-stat="groups">—</b><span data-label="groups">обновлений</span></div>
+            </div>
+            <p class="since" data-since>Загружаем ленту…</p>
+        </div>
+    </header>
+
+    <main class="page">
+        <div class="notices" data-notices></div>
+
+        <nav class="toolbar" aria-label="Что показывать">
+            <div class="chips" role="group" aria-label="Вид изменений" data-chips></div>
+            <button class="icon-button search-toggle" type="button" aria-label="Поиск" aria-expanded="false" title="Поиск">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+            </button>
+            <div class="search" hidden>
+                <input type="search" placeholder="Например: Steam, турбо, окно" aria-label="Искать в ленте" enterkeyhint="search" autocomplete="off">
+            </div>
+        </nav>
+
+        <div class="feed" data-feed aria-busy="true">
+            <div class="skeleton"><i></i><i></i><i></i></div>
+        </div>
+
+        <footer class="about">
+            <div class="about-card">
+                <h2>Об игре</h2>
+                <p>«Как пылесосить» — сетевая физическая комедия от первого лица на двух–четырёх игроков.
+                    Задача — пропылесосить дом лучше соперников, бросить в друга табуреткой и закончить матч
+                    с невинным видом профессионального клинера.</p>
+                <p class="about-small">Лента собирается сама из журнала изменений игры: всё, что вошло в
+                    игру, появляется здесь в тот же день. Новое с вашего прошлого визита отмечено
+                    оранжевым.</p>
+                <button class="share" type="button" hidden>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3"/><path d="m7 8 5-5 5 5"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>
+                    Отправить ссылку
+                </button>
+            </div>
+            <p class="stamp" data-stamp></p>
+        </footer>
+    </main>
+
+    <div class="toast" role="status" aria-live="polite" hidden></div>
+
+    <noscript>
+        <p class="noscript">Лента показывается с включённым JavaScript.</p>
+    </noscript>
+</body>
+</html>
