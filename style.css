@@ -30,6 +30,7 @@
 
     --radius: 18px;
     --page: 680px;
+    --tabbar: 62px;
     --safe-top: env(safe-area-inset-top, 0px);
     --safe-bottom: env(safe-area-inset-bottom, 0px);
     --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -185,14 +186,15 @@ svg {
     height: 22px;
 }
 
-.refresh {
+.head-button {
+    position: relative;
     align-self: flex-start;
     color: #d7dde6;
     background: rgba(255, 255, 255, 0.06);
     box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
-.refresh:active {
+.head-button:active {
     transform: translateY(1px);
 }
 
@@ -288,10 +290,11 @@ svg {
 
 /* ---------- Страница ---------- */
 
+/* Снизу место под панель вкладок (--tabbar в views.css). */
 .page {
     max-width: var(--page);
     margin: 0 auto;
-    padding: 18px 16px calc(var(--safe-bottom) + 28px);
+    padding: 18px 16px calc(var(--safe-bottom) + var(--tabbar) + 28px);
 }
 
 .notices:empty {
@@ -895,8 +898,8 @@ mark {
 .toast {
     position: fixed;
     left: 50%;
-    bottom: calc(var(--safe-bottom) + 18px);
-    z-index: 40;
+    bottom: calc(var(--safe-bottom) + var(--tabbar) + 14px);
+    z-index: 70;
     max-width: calc(100% - 32px);
     padding: 10px 16px;
     border-radius: 12px;

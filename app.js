@@ -1,250 +1,565 @@
-// «HTV — дневник разработки», лента новостей игры «Как пылесосить»: грузит changelog.md рядом со страницей (его кладёт
-// Tools/news.ps1 из Docs/CHANGELOG.md), рисует дни и порции изменений и помнит в браузере
-// читателя, какие пункты он уже видел: новое с прошлого визита отмечено оранжевым.
+// «HTV — дневник разработки» игры «Как пылесосить»: приложение для телефона, которое ставится на
+// экран «Домой». Здесь каркас: вкладки внизу, шапка, листы настроек и «Что нового», уведомления,
+// установка. Вкладки живут в своих модулях: лента (feed.js), игра, планы, факты и приколы
+// (views/*.js). Переход между вкладками — по адресу после «#», поэтому ссылка из уведомления
+// открывает нужную вкладку, а кнопка «Назад» на Android возвращает в ленту.
 
 import {
-    KIND_ORDER, escapeHtml, inlineHtml, monthGenitive, parseChangelog, plural, searchable, stats,
-} from './parse.js';
+    feedDoc, feedIsStale, followFeedAnchor, freshCount, initFeed, loadFeed, markAllSeen,
+    measureClamps, pauseSeen, renderNotices, scheduleSeen, setFeedActive,
+} from './feed.js';
+import { parseRoadmap, roadmapSnapshot, roadmapStats } from './roadmap.js';
+import { hashKey, plural } from './parse.js';
+import { isoDay } from './daily.js';
+import {
+    DEFAULT_TOPICS, disablePush, enablePush, isAndroid, isIos, isStandalone, loadPushConfig,
+    pushState, resyncPush, setTopics, testPush,
+} from './push.js';
+import { ICONS, buzz, reducedMotion, share, store, toast } from './shared.js';
+import * as gameView from './views/game.js';
+import * as plansView from './views/plans.js';
+import * as factsView from './views/facts.js';
+import * as funView from './views/fun.js';
 
-const SOURCE = 'changelog.md';
-const SEEN_KEY = 'news.seen';
+// Версия приложения: выросла — читателю, который уже открывал ленту, один раз показывается лист
+// «Что нового в HTV».
+const APP_VERSION = 2;
+const VERSION_KEY = 'news.appVersion';
 const INSTALL_KEY = 'news.installDismissed';
-// Пункты считаются прочитанными, если лента провисела на экране столько: открыть и сразу
-// закрыть — не значит увидеть.
-const SEEN_AFTER_MS = 4000;
-// Вернулись в приложение позже этого — лента проверяется заново.
-const REFRESH_AFTER_MS = 60 * 1000;
+const PUSH_PROMPT_KEY = 'news.pushPromptDismissed';
+const PLANS_SEEN_KEY = 'news.plansSeen';
+const FACT_SEEN_KEY = 'news.factSeenDay';
 
-const WEEKDAYS = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
-
-const FILTERS = [
-    { id: 'all', label: 'Всё' },
-    { id: 'added', label: 'Добавлено' },
-    { id: 'changed', label: 'Изменено' },
-    { id: 'fixed', label: 'Исправлено' },
-];
-
-const WORDS = {
-    added: ['новинка', 'новинки', 'новинок'],
-    changed: ['изменение', 'изменения', 'изменений'],
-    fixed: ['исправление', 'исправления', 'исправлений'],
-    removed: ['убранное', 'убранных', 'убранных'],
-    other: ['пункт', 'пункта', 'пунктов'],
-    groups: ['обновление', 'обновления', 'обновлений'],
+const TABS = {
+    feed: { title: 'HTV — дневник разработки', tagline: 'Дневник разработки' },
+    game: { title: 'Об игре — HTV', tagline: 'Об игре', view: gameView },
+    plans: { title: 'Планы — HTV', tagline: 'Планы', view: plansView },
+    facts: { title: 'Факты — HTV', tagline: 'Факты', view: factsView },
+    fun: { title: 'Приколы — HTV', tagline: 'Приколы', view: funView },
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 
-const state = {
-    text: '',
-    doc: null,
-    totals: null,
-    filter: 'all',
-    query: '',
-    fresh: new Set(),
-    freshGroups: new Set(),
-    open: new Set(),
-    fetchedAt: 0,
-    loading: false,
+const app = {
+    tab: '',
+    mounted: new Set(),
+    scroll: {},
+    roadmap: null,
+    roadmapText: '',
+    facts: null,
     installPrompt: null,
+    push: { reason: 'unconfigured', subscribed: false, topics: DEFAULT_TOPICS },
 };
 
-const store = {
-    get(key, fallback) {
-        try {
-            const raw = localStorage.getItem(key);
-            return raw === null ? fallback : JSON.parse(raw);
-        } catch {
-            return fallback;
-        }
-    },
-    set(key, value) {
-        try {
-            localStorage.setItem(key, JSON.stringify(value));
-        } catch {
-            // Приватный режим или запрет хранилища: лента работает, только не помнит прочитанное.
-        }
-    },
+// Что вкладкам нужно от каркаса.
+const ctx = {
+    feedDoc,
+    roadmap: () => app.roadmap,
+    facts: () => app.facts,
+    today: () => isoDay(),
+    openTab: (id, arg) => navigate(id, arg),
+    openSheet,
+    closeSheet,
+    toast,
+    share,
+    buzz,
 };
 
-// ---------- Загрузка ----------
+// ---------- Данные ----------
 
-async function load({ manual = false } = {}) {
-    if (state.loading) {
-        return;
-    }
-    state.loading = true;
-    $('.refresh').classList.add('busy');
+async function loadRoadmap() {
     try {
-        const response = await fetch(SOURCE, { cache: 'no-cache' });
+        const response = await fetch('roadmap.md', { cache: 'no-cache' });
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
         const text = await response.text();
-        state.fetchedAt = Date.now();
-        if (text === state.text) {
-            if (manual) {
-                toast(navigator.onLine === false ? 'Нет связи — показана сохранённая лента' : 'Нового пока нет');
-            }
-            return;
-        }
-
-        const first = !state.doc;
-        state.text = text;
-        state.doc = parseChangelog(text);
-        state.totals = stats(state.doc);
-        markFresh();
-        if (first) {
-            const newest = state.doc.days[0];
-            for (const group of newest ? newest.groups : []) {
-                state.open.add(group.key);
-            }
-        }
-        render();
-        if (first) {
-            followHash();
-        } else {
-            toast(state.freshGroups.size ? 'В ленте новое' : 'Лента обновлена');
+        if (text !== app.roadmapText) {
+            app.roadmapText = text;
+            app.roadmap = parseRoadmap(text);
+            onDataChanged('plans');
         }
     } catch {
-        if (!state.doc) {
-            renderFailure();
-        } else if (manual) {
-            toast('Нет связи — показана сохранённая лента');
+        // Без сети вкладка покажет, что было, или скажет, что планы не загрузились.
+        if (!app.roadmap) {
+            onDataChanged('plans');
+        }
+    }
+}
+
+async function loadFacts() {
+    try {
+        const response = await fetch('data/facts.json', { cache: 'no-cache' });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const facts = await response.json();
+        if (JSON.stringify(facts) !== JSON.stringify(app.facts)) {
+            app.facts = facts;
+            onDataChanged('facts');
+        }
+    } catch {
+        if (!app.facts) {
+            onDataChanged('facts');
+        }
+    }
+}
+
+function onDataChanged(which) {
+    for (const id of app.mounted) {
+        const view = TABS[id].view;
+        if (view && view.update) {
+            view.update(viewElement(id), ctx, which);
+        }
+    }
+    renderHead();
+    renderDots();
+    if (which === 'facts') {
+        renderNotices();
+    }
+}
+
+async function refreshAll({ manual = false } = {}) {
+    const button = $('.refresh');
+    button.classList.add('busy');
+    try {
+        await Promise.all([loadFeed({ manual: manual && app.tab === 'feed' }), loadRoadmap(), loadFacts()]);
+        if (manual && app.tab !== 'feed') {
+            toast('Обновлено');
         }
     } finally {
-        state.loading = false;
-        $('.refresh').classList.remove('busy');
-        renderStamp();
+        button.classList.remove('busy');
     }
 }
 
-// ---------- Что читатель уже видел ----------
+// ---------- Вкладки ----------
 
-let seenTimer = 0;
-let pendingSeen = null;
+function viewElement(id) {
+    return $(`[data-view="${id}"]`);
+}
 
-function markFresh() {
-    const keys = allItems(state.doc).map(item => item.key);
-    // Первый визит — отмечать нечего: новым было бы всё.
-    const seen = store.get(SEEN_KEY, null);
-    const known = new Set(Array.isArray(seen) ? seen : keys);
-    state.fresh = new Set(keys.filter(key => !known.has(key)));
-    state.freshGroups = new Set();
-    for (const day of state.doc.days) {
-        for (const group of day.groups) {
-            if (group.sections.some(s => s.items.some(item => state.fresh.has(item.key)))) {
-                state.freshGroups.add(group.key);
-                state.open.add(group.key);
+function parseHash() {
+    const hash = decodeURIComponent(location.hash.slice(1));
+    const [head, ...rest] = hash.split('/');
+    if (TABS[head]) {
+        return { tab: head, arg: rest.join('/') };
+    }
+    return { tab: 'feed', arg: hash };
+}
+
+function route() {
+    const { tab, arg } = parseHash();
+    showTab(tab, arg);
+}
+
+// Переход по нажатию: из ленты — новой записью истории (кнопка «Назад» вернёт в ленту), между
+// остальными вкладками — заменой, чтобы «Назад» не листал их все по очереди.
+function navigate(id, arg = '') {
+    const hash = id === 'feed' ? (arg ? `#${arg}` : '') : `#${id}${arg ? `/${arg}` : ''}`;
+    const url = location.pathname + location.search + hash;
+    if (app.tab === 'feed' && id !== 'feed') {
+        history.pushState(null, '', url);
+    } else {
+        history.replaceState(null, '', url);
+    }
+    showTab(id, arg);
+}
+
+function showTab(id, arg = '') {
+    const previous = app.tab;
+    if (previous && previous !== id) {
+        app.scroll[previous] = scrollY;
+    }
+    app.tab = id;
+    document.body.dataset.tab = id;
+    document.title = TABS[id].title;
+
+    for (const tab of document.querySelectorAll('.tabbar .tab')) {
+        const current = tab.dataset.tab === id;
+        tab.classList.toggle('active', current);
+        if (current) {
+            tab.setAttribute('aria-current', 'page');
+        } else {
+            tab.removeAttribute('aria-current');
+        }
+    }
+    for (const view of document.querySelectorAll('[data-view]')) {
+        view.hidden = view.dataset.view !== id;
+    }
+
+    const element = viewElement(id);
+    const view = TABS[id].view;
+    if (view && !app.mounted.has(id)) {
+        app.mounted.add(id);
+        view.mount(element, ctx);
+    }
+    if (previous !== id && !reducedMotion()) {
+        element.classList.remove('view-enter');
+        void element.offsetWidth;
+        element.classList.add('view-enter');
+    }
+
+    setFeedActive(id === 'feed');
+    if (id === 'feed' && previous && previous !== 'feed') {
+        // Факт дня мог быть прочитан на своей вкладке: подсказка над лентой гаснет.
+        renderNotices();
+    }
+    if (id === 'plans' && app.roadmap) {
+        store.set(PLANS_SEEN_KEY, plansFingerprint());
+    }
+    if (id === 'facts') {
+        store.set(FACT_SEEN_KEY, isoDay());
+    }
+    renderHead();
+    renderDots();
+
+    let anchored = false;
+    if (id === 'feed' && arg) {
+        anchored = followFeedAnchor(arg);
+    } else if (view && view.show) {
+        anchored = view.show(element, ctx, arg) === true;
+    }
+    if (!anchored && previous !== id) {
+        scrollTo(0, app.scroll[id] || 0);
+    }
+    if (id === 'feed') {
+        measureClamps(element);
+    }
+}
+
+function renderHead() {
+    const tab = TABS[app.tab] || TABS.feed;
+    $('[data-tagline]').textContent = tab.tagline;
+    const sub = $('[data-head-sub]');
+    const text = headSub(app.tab);
+    sub.hidden = !text;
+    sub.innerHTML = text;
+}
+
+function headSub(id) {
+    switch (id) {
+        case 'game':
+            return '«Как пылесосить»: уборка наперегонки и табуретки в коллег';
+        case 'plans': {
+            if (!app.roadmap) {
+                return 'Что готово, что в работе и что впереди';
             }
+            const s = roadmapStats(app.roadmap);
+            const fix = s.fix ? ` · <b>${s.fix}</b> ${plural(s.fix, 'требует', 'требуют', 'требуют')} исправления` : '';
+            return `Готово <b>${s.percent} %</b> шагов${fix}`;
         }
-    }
-    pendingSeen = keys;
-    scheduleSeen();
-}
-
-function scheduleSeen() {
-    clearTimeout(seenTimer);
-    if (pendingSeen && document.visibilityState === 'visible') {
-        seenTimer = setTimeout(() => {
-            store.set(SEEN_KEY, pendingSeen);
-            pendingSeen = null;
-        }, SEEN_AFTER_MS);
+        case 'facts':
+            return app.facts
+                ? `Каждый день новый факт · в копилке ${app.facts.length} ${plural(app.facts.length, 'факт', 'факта', 'фактов')}`
+                : 'Каждый день новый факт';
+        case 'fun':
+            return 'Гороскоп клинера, тест, диктор и мини-игра';
+        default:
+            return '';
     }
 }
 
-function allItems(doc) {
-    return doc.days.flatMap(day => day.groups.flatMap(g => g.sections.flatMap(s => s.items)));
+// Точки на вкладках: в ленте новое; в планах что-то сдвинулось с прошлого захода; факт дня
+// ещё не открыт.
+function renderDots() {
+    const feedDot = $('.tab[data-tab="feed"] .tab-dot');
+    feedDot.hidden = app.tab === 'feed' || freshCount() === 0;
+
+    const plansDot = $('.tab[data-tab="plans"] .tab-dot');
+    const seen = store.get(PLANS_SEEN_KEY, null);
+    if (app.roadmap && seen === null) {
+        store.set(PLANS_SEEN_KEY, plansFingerprint());
+    }
+    plansDot.hidden = !app.roadmap || app.tab === 'plans' || seen === null || seen === plansFingerprint();
+
+    const factsDot = $('.tab[data-tab="facts"] .tab-dot');
+    factsDot.hidden = !app.facts || app.tab === 'facts' || store.get(FACT_SEEN_KEY, '') === isoDay();
 }
 
-// ---------- Отрисовка ----------
-
-function render() {
-    renderStats();
-    renderNotices();
-    renderChips();
-    renderFeed();
+function plansFingerprint() {
+    return hashKey(JSON.stringify(roadmapSnapshot(app.roadmap)));
 }
 
-function renderStats() {
-    const t = state.totals;
-    countUp('added', t.added, WORDS.added);
-    countUp('fixed', t.fixed, WORDS.fixed);
-    countUp('groups', t.groups, WORDS.groups);
-    $('[data-since]').innerHTML = t.first
-        ? `С ${escapeHtml(formatDate(t.first))} · последнее обновление <strong>${escapeHtml(whenLong(t.last))}</strong>`
-        : '';
+// ---------- Листы ----------
+
+let sheetReturnFocus = null;
+let sheetOnClose = null;
+
+function openSheet(html, { onClose } = {}) {
+    const sheet = $('[data-sheet]');
+    const backdrop = $('[data-sheet-backdrop]');
+    $('[data-sheet-body]').innerHTML = html;
+    sheetReturnFocus = document.activeElement;
+    sheetOnClose = onClose || null;
+    backdrop.hidden = false;
+    sheet.hidden = false;
+    document.body.classList.add('sheet-open');
+    requestAnimationFrame(() => {
+        backdrop.classList.add('shown');
+        sheet.classList.add('shown');
+    });
+    const focusable = sheet.querySelector('button, [href], input');
+    if (focusable) {
+        focusable.focus({ preventScroll: true });
+    }
 }
 
-function countUp(name, value, words) {
-    const number = $(`[data-stat="${name}"]`);
-    $(`[data-label="${name}"]`).textContent = plural(value, ...words);
-    const from = Number(number.dataset.value || 0);
-    number.dataset.value = String(value);
-    if (from === value || matchMedia('(prefers-reduced-motion: reduce)').matches) {
-        number.textContent = String(value);
+function closeSheet() {
+    const sheet = $('[data-sheet]');
+    if (sheet.hidden) {
         return;
     }
-    const started = performance.now();
-    const step = now => {
-        const t = Math.min(1, (now - started) / 700);
-        number.textContent = String(Math.round(from + (value - from) * (1 - Math.pow(1 - t, 3))));
-        if (t < 1) {
-            requestAnimationFrame(step);
-        }
+    const backdrop = $('[data-sheet-backdrop]');
+    sheet.classList.remove('shown');
+    backdrop.classList.remove('shown');
+    document.body.classList.remove('sheet-open');
+    const done = () => {
+        sheet.hidden = true;
+        backdrop.hidden = true;
+        sheet.style.transform = '';
     };
-    requestAnimationFrame(step);
+    if (reducedMotion()) {
+        done();
+    } else {
+        setTimeout(done, 220);
+    }
+    if (sheetReturnFocus && sheetReturnFocus.focus) {
+        sheetReturnFocus.focus({ preventScroll: true });
+    }
+    const callback = sheetOnClose;
+    sheetOnClose = null;
+    if (callback) {
+        callback();
+    }
 }
 
-function renderNotices() {
-    if (!state.doc) {
-        return;
+// Лист можно смахнуть вниз за ручку или за заголовок.
+function wireSheetDrag() {
+    const sheet = $('[data-sheet]');
+    let startY = 0;
+    let dragging = false;
+    let offset = 0;
+    sheet.addEventListener('touchstart', event => {
+        const grip = event.target.closest('.sheet-handle, .sheet-head');
+        if (!grip || sheet.scrollTop > 0) {
+            return;
+        }
+        dragging = true;
+        startY = event.touches[0].clientY;
+        offset = 0;
+        sheet.style.transition = 'none';
+    }, { passive: true });
+    sheet.addEventListener('touchmove', event => {
+        if (!dragging) {
+            return;
+        }
+        offset = Math.max(0, event.touches[0].clientY - startY);
+        sheet.style.transform = `translate(-50%, ${offset}px)`;
+    }, { passive: true });
+    sheet.addEventListener('touchend', () => {
+        if (!dragging) {
+            return;
+        }
+        dragging = false;
+        sheet.style.transition = '';
+        if (offset > 90) {
+            closeSheet();
+        } else {
+            sheet.style.transform = '';
+        }
+    });
+}
+
+// ---------- Настройки и уведомления ----------
+
+async function refreshPushState() {
+    app.push = await pushState();
+    // Точка на колокольчике зовёт включить уведомления, пока читатель от них не отказался.
+    const bellDot = $('.bell-dot');
+    bellDot.hidden = !(app.push.reason === 'ok' && !app.push.subscribed && !store.get(PUSH_PROMPT_KEY, false));
+    $('.bell').classList.toggle('on', app.push.subscribed);
+    return app.push;
+}
+
+function pushStatusHtml(state) {
+    switch (state.reason) {
+        case 'unconfigured':
+            return '<p class="set-note">Сервер уведомлений ещё не включён. Как только его запустят, здесь появятся переключатели.</p>';
+        case 'ios-install':
+            return `<p class="set-note">iPhone присылает уведомления только приложениям с экрана «Домой». Откройте HTV в Safari, нажмите «Поделиться» ${ICONS.shareInline} → «На экран „Домой“», запустите оттуда и включите здесь.</p>`;
+        case 'unsupported':
+            return '<p class="set-note">Этот браузер не умеет уведомления от сайтов. На Android откройте HTV в Chrome, на iPhone — добавьте на экран «Домой».</p>';
+        case 'denied':
+            return isIos()
+                ? '<p class="set-note warn">Уведомления запрещены. Включить: Настройки телефона → Уведомления → HTV.</p>'
+                : '<p class="set-note warn">Уведомления запрещены. Включить: значок замка рядом с адресом → Разрешения → Уведомления. В установленном приложении — долгое нажатие на иконку → О приложении → Уведомления.</p>';
+        default:
+            return state.subscribed
+                ? '<p class="set-note ok">Уведомления включены.</p>'
+                : '<p class="set-note">Уведомления выключены.</p>';
     }
+}
+
+function toggleHtml(id, title, sub, on, disabled) {
+    return `
+        <label class="set-row toggle-row${disabled ? ' disabled' : ''}">
+            <span class="set-text"><b>${title}</b><small>${sub}</small></span>
+            <input type="checkbox" class="switch" data-topic="${id}"${on ? ' checked' : ''}${disabled ? ' disabled' : ''}>
+        </label>`;
+}
+
+async function openSettings() {
+    const state = await refreshPushState();
+    const usable = state.reason === 'ok';
+    const topics = state.subscribed ? state.topics : { updates: false, daily: false };
+    openSheet(`
+        <header class="sheet-head">
+            <h2 id="sheet-title">Настройки</h2>
+            <button class="icon-button sheet-close" type="button" data-action="close-sheet" aria-label="Закрыть">${ICONS.close}</button>
+        </header>
+        <section class="set-group">
+            <h3>${ICONS.bell} Уведомления</h3>
+            <div data-push-status>${pushStatusHtml(state)}</div>
+            ${toggleHtml('updates', 'Новое в игре и планах', 'Вышло обновление, этап плана сдвинулся', topics.updates, !usable)}
+            ${toggleHtml('daily', 'Факт дня', 'Каждое утро в 10:00 по Москве', topics.daily, !usable)}
+            <button class="slab-button small" type="button" data-action="test-push"${state.subscribed ? '' : ' hidden'}>Прислать проверочное</button>
+        </section>
+        <section class="set-group">
+            <h3>Лента</h3>
+            <button class="set-row set-button" type="button" data-action="mark-all-seen"><span class="set-text"><b>Отметить всё прочитанным</b><small>Оранжевые отметки нового погаснут</small></span></button>
+        </section>
+        <section class="set-group">
+            <h3>О приложении</h3>
+            <button class="set-row set-button" type="button" data-action="whats-new"><span class="set-text"><b>Что нового в HTV</b><small>Версия ${APP_VERSION}.0</small></span>${ICONS.arrow}</button>
+            <button class="set-row set-button" type="button" data-action="share-app"><span class="set-text"><b>Отправить ссылку</b><small>Друзьям и соавторам</small></span>${ICONS.share}</button>
+        </section>`);
+}
+
+async function onTopicToggle(input) {
+    const rows = [...document.querySelectorAll('[data-topic]')];
+    const wanted = Object.fromEntries(rows.map(row => [row.dataset.topic, row.checked]));
+    rows.forEach(row => { row.disabled = true; });
+    try {
+        if (!app.push.subscribed && (wanted.updates || wanted.daily)) {
+            await enablePush(wanted);
+            toast('Уведомления включены');
+        } else {
+            await setTopics(wanted);
+            toast(wanted.updates || wanted.daily ? 'Сохранено' : 'Уведомления выключены');
+        }
+        if (!wanted.updates && !wanted.daily) {
+            // Выключил сам — больше не зовём включить.
+            store.set(PUSH_PROMPT_KEY, true);
+        }
+    } catch (error) {
+        input.checked = !input.checked;
+        const reason = String(error && error.message);
+        toast(reason === 'denied'
+            ? 'Телефон запретил уведомления'
+            : reason === 'dismissed' ? 'Разрешение не дали' : 'Не получилось: нет связи с сервером');
+    }
+    const state = await refreshPushState();
+    const status = $('[data-push-status]');
+    if (status) {
+        status.innerHTML = pushStatusHtml(state);
+    }
+    rows.forEach(row => { row.disabled = state.reason !== 'ok'; });
+    const test = $('[data-action="test-push"]');
+    if (test) {
+        test.hidden = !state.subscribed;
+    }
+    renderNotices();
+}
+
+function whatsNewHtml() {
+    const items = [
+        ['game', 'Игра', 'Всё об игре: как идёт матч, что умеет пылесос, карты, герой и находки.'],
+        ['plans', 'Планы', 'Что готово, что в работе, что впереди — и что сделано, но требует исправления.'],
+        ['facts', 'Факты', 'Каждый день новый: история пылесоса, наука о пыли, игры и байки нашей разработки.'],
+        ['fun', 'Приколы', 'Гороскоп клинера, тест «Какой ты пылесос?», генератор диктора и мини-игра.'],
+    ];
+    return `
+        <header class="sheet-head">
+            <h2 id="sheet-title">HTV обновилось</h2>
+            <button class="icon-button sheet-close" type="button" data-action="close-sheet" aria-label="Закрыть">${ICONS.close}</button>
+        </header>
+        <p class="sheet-lead">Теперь это не только лента. Внизу — вкладки:</p>
+        <ul class="whats-new">
+            ${items.map(([id, title, text]) => `
+                <li><button type="button" data-action="open-tab" data-tab-target="${id}">
+                    <b>${title}</b><span>${text}</span>${ICONS.arrow}
+                </button></li>`).join('')}
+            ${app.push.reason === 'unconfigured' ? '' : `<li class="whats-new-push"><button type="button" data-action="settings">
+                <b>Уведомления</b><span>О новом в игре и о сдвигах в планах, а по желанию — факт дня. Включаются колокольчиком вверху.</span>${ICONS.arrow}
+            </button></li>`}
+        </ul>
+        <button class="slab-button wide" type="button" data-action="close-sheet">Понятно</button>`;
+}
+
+function maybeShowWhatsNew() {
+    const seenVersion = store.get(VERSION_KEY, 0);
+    const returning = store.get('news.seen', null) !== null;
+    store.set(VERSION_KEY, APP_VERSION);
+    if (returning && seenVersion < APP_VERSION && !location.hash) {
+        setTimeout(() => openSheet(whatsNewHtml()), 600);
+    }
+}
+
+// ---------- Подсказки над лентой ----------
+
+function extraNotices() {
     const parts = [];
-
-    if (state.freshGroups.size) {
-        const groups = state.doc.days.flatMap(d => d.groups).filter(g => state.freshGroups.has(g.key));
-        const n = groups.length;
-        const list = groups.slice(0, 4).map(g => `<li>${escapeHtml(g.title)}</li>`).join('');
-        const more = n > 4 ? `<li>и ещё ${n - 4}</li>` : '';
-        parts.push(`
-            <section class="notice fresh-news">
-                <h3>Пока вас не было — ${n} ${plural(n, ...WORDS.groups)}</h3>
-                <ul>${list}${more}</ul>
-                <button class="slab-button" type="button" data-action="show-fresh">Смотреть новое ↓</button>
-            </section>`);
+    const push = pushNotice();
+    if (push) {
+        parts.push(push);
     }
-
     const install = installNotice();
     if (install) {
         parts.push(install);
     }
+    const teaser = factsView.teaserHtml(ctx);
+    if (teaser) {
+        parts.push(teaser);
+    }
+    return parts;
+}
 
-    $('[data-notices]').innerHTML = parts.join('');
+function pushNotice() {
+    if (app.push.reason !== 'ok' || app.push.subscribed || store.get(PUSH_PROMPT_KEY, false)) {
+        return '';
+    }
+    return `
+        <section class="notice push-prompt">
+            <button class="icon-button close" type="button" data-action="close-push-prompt" aria-label="Скрыть">${ICONS.close}</button>
+            <h3>${ICONS.bell} Узнавайте о новом первым</h3>
+            <p>Уведомление придёт, как только в игру войдёт обновление или сдвинется этап плана.</p>
+            <button class="slab-button" type="button" data-action="settings">Включить уведомления</button>
+        </section>`;
 }
 
 function installNotice() {
     if (isStandalone() || store.get(INSTALL_KEY, false)) {
         return '';
     }
-    const close = `<button class="icon-button close" type="button" data-action="close-install" aria-label="Скрыть">${ICON_CLOSE}</button>`;
+    const close = `<button class="icon-button close" type="button" data-action="close-install" aria-label="Скрыть">${ICONS.close}</button>`;
     const telegram = '<p class="install-note">Ссылка открылась внутри Telegram? Сначала откройте её в браузере: меню ⋯ → «Открыть в браузере».</p>';
 
-    if (state.installPrompt) {
+    if (app.installPrompt) {
         return `
             <section class="notice install">${close}
-                <h3>Поставьте ленту на экран телефона</h3>
-                <p>Она откроется как приложение, отдельно от браузера.</p>
+                <h3>Поставьте HTV на экран телефона</h3>
+                <p>Оно откроется как приложение, отдельно от браузера, и сможет присылать уведомления.</p>
                 <button class="slab-button" type="button" data-action="install">Установить</button>
             </section>`;
     }
     if (isIos()) {
         return `
             <section class="notice install">${close}
-                <h3>Поставьте ленту на экран iPhone</h3>
+                <h3>Поставьте HTV на экран iPhone</h3>
                 <ol class="install-steps">
-                    <li>Откройте страницу в Safari и нажмите «Поделиться» ${ICON_SHARE} внизу экрана.</li>
+                    <li>Откройте страницу в Safari и нажмите «Поделиться» ${ICONS.shareInline} внизу экрана.</li>
                     <li>Выберите «На экран „Домой“» и нажмите «Добавить».</li>
+                    <li>Запустите HTV с экрана «Домой» — только так iPhone разрешит уведомления.</li>
                 </ol>
                 ${telegram}
             </section>`;
@@ -252,7 +567,7 @@ function installNotice() {
     if (isAndroid()) {
         return `
             <section class="notice install">${close}
-                <h3>Поставьте ленту на экран телефона</h3>
+                <h3>Поставьте HTV на экран телефона</h3>
                 <ol class="install-steps">
                     <li>Откройте страницу в Chrome и нажмите меню ⋮ справа вверху.</li>
                     <li>Выберите «Добавить на главный экран» или «Установить приложение».</li>
@@ -263,493 +578,183 @@ function installNotice() {
     return '';
 }
 
-function renderChips() {
-    const t = state.totals;
-    const counts = { all: t.items, added: t.added, changed: t.changed, fixed: t.fixed };
-    const chips = $('[data-chips]');
-    chips.innerHTML = FILTERS
-        .filter(f => f.id === 'all' || counts[f.id])
-        .map(f => {
-            const kind = f.id === 'all' ? '' : ` data-kind="${f.id}"`;
-            const dot = f.id === 'all' ? '' : '<span class="dot"></span>';
-            return `<button class="chip" type="button" data-filter="${f.id}"${kind} aria-pressed="${state.filter === f.id}">${dot}${f.label}<small>${counts[f.id]}</small></button>`;
-        })
-        .join('');
-    markChipsScroll();
-}
-
-function markChipsScroll() {
-    const chips = $('[data-chips]');
-    chips.classList.toggle('scrolls', chips.scrollWidth > chips.clientWidth + 1);
-    chips.classList.toggle('at-end', chips.scrollLeft + chips.clientWidth >= chips.scrollWidth - 2);
-}
-
-function renderFeed() {
-    const feed = $('[data-feed]');
-    feed.removeAttribute('aria-busy');
-    const query = searchable(state.query.trim());
-    const filtering = state.filter !== 'all' || Boolean(query);
-    const days = [];
-
-    for (const day of state.doc.days) {
-        const cards = [];
-        for (const group of day.groups) {
-            const view = filterGroup(group, query);
-            if (view) {
-                cards.push(cardHtml(group, view, filtering, Boolean(query)));
-            }
-        }
-        if (cards.length) {
-            days.push(`<section class="day" id="${day.id}">${dayHeadHtml(day)}${cards.join('')}</section>`);
-        }
-    }
-
-    if (days.length) {
-        feed.innerHTML = days.join('');
-    } else {
-        const what = query ? `по запросу «${escapeHtml(state.query.trim())}»` : 'в этом разделе';
-        feed.innerHTML = `
-            <div class="empty">
-                <strong>Ничего не нашлось</strong>
-                ${what} пока пусто.
-                <div><button class="slab-button" type="button" data-action="reset">Показать всё</button></div>
-            </div>`;
-    }
-
-    if (query) {
-        highlight(feed, query);
-    }
-    measureClamps(feed);
-}
-
-function filterGroup(group, query) {
-    const titleHit = query && searchable(`${group.title} ${group.subtitle}`).includes(query);
-    const sections = [];
-    let count = 0;
-    for (const section of group.sections) {
-        if (state.filter !== 'all' && section.kind !== state.filter) {
-            continue;
-        }
-        const items = query && !titleHit
-            ? section.items.filter(item => searchable(item.raw).includes(query))
-            : section.items;
-        if (items.length) {
-            sections.push({ section, items });
-            count += items.length;
-        }
-    }
-    return count ? { sections, count } : null;
-}
-
-function cardHtml(group, view, filtering, searching) {
-    const open = filtering || state.open.has(group.key);
-    const fresh = state.freshGroups.has(group.key);
-    const id = `g-${group.key}`;
-
-    const counts = {};
-    for (const { section, items } of view.sections) {
-        counts[section.kind] = (counts[section.kind] || 0) + items.length;
-    }
-    const meta = KIND_ORDER
-        .filter(kind => counts[kind])
-        .map(kind => `<span class="kind" data-kind="${kind}"><i></i>${counts[kind]} ${plural(counts[kind], ...WORDS[kind])}</span>`)
-        .join('');
-
-    const sections = view.sections.map(({ section, items }) => `
-        <section class="sec" data-kind="${section.kind}">
-            <h4 class="sec-label"><i></i>${escapeHtml(section.label)}${section.note ? ` <small>· ${escapeHtml(section.note)}</small>` : ''}</h4>
-            <ul class="items">${items.map(item => itemHtml(item, searching)).join('')}</ul>
-        </section>`).join('');
-    const notes = filtering ? '' : group.notes.map(note => `<p class="card-note">${inlineHtml(note)}</p>`).join('');
-
-    return `
-        <article class="card${fresh ? ' fresh' : ''}" id="${id}">
-            <h3 class="card-h">
-                <button class="card-head" type="button" aria-expanded="${open}" aria-controls="${id}-body" data-toggle="${group.key}">
-                    <span class="card-titles">
-                        <span class="card-title">${escapeHtml(group.title)}</span>
-                        ${group.subtitle ? `<span class="card-sub">${escapeHtml(group.subtitle)}</span>` : ''}
-                        <span class="card-meta">${meta}${fresh ? '<span class="fresh-pill">свежее</span>' : ''}</span>
-                    </span>
-                    <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-                </button>
-            </h3>
-            <div class="card-body" id="${id}-body"${open ? '' : ' hidden'}>${sections}${notes}</div>
-        </article>`;
-}
-
-function itemHtml(item, searching) {
-    const classes = ['item'];
-    if (!searching) {
-        classes.push('clamp');
-    }
-    if (state.fresh.has(item.key)) {
-        classes.push('fresh');
-    }
-    return `<li class="${classes.join(' ')}"><p class="item-text">${inlineHtml(item.raw)}</p><button class="more" type="button" data-more>Читать дальше</button></li>`;
-}
-
-function dayHeadHtml(day) {
-    const date = parseIso(day.iso);
-    if (!date) {
-        return `<header class="day-head"><h2>${escapeHtml(day.heading)}</h2></header>`;
-    }
-    let title = `${date.getDate()} ${monthGenitive(date.getMonth())}`;
-    if (date.getFullYear() !== new Date().getFullYear()) {
-        title += ` ${date.getFullYear()}`;
-    }
-    if (day.note) {
-        title += `, ${day.note}`;
-    }
-    const near = relative(date);
-    const sub = [WEEKDAYS[date.getDay()], near].filter(Boolean).join(' · ');
-    return `<header class="day-head"><h2>${escapeHtml(title)}</h2><span${near === 'сегодня' ? ' class="today"' : ''}>${escapeHtml(sub)}</span></header>`;
-}
-
-function renderFailure() {
-    $('[data-feed]').innerHTML = `
-        <div class="empty">
-            <strong>Не удалось загрузить ленту</strong>
-            Проверьте интернет и попробуйте ещё раз.
-            <div><button class="slab-button" type="button" data-action="retry">Попробовать ещё раз</button></div>
-        </div>`;
-    $('[data-since]').textContent = '';
-}
-
-function renderStamp() {
-    const stamp = $('[data-stamp]');
-    if (!state.fetchedAt) {
-        stamp.textContent = '';
-        return;
-    }
-    const time = new Date(state.fetchedAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-    stamp.textContent = `Лента проверена в ${time}`;
-}
-
-// Пункт длиннее четырёх строк свёрнут; «Читать дальше» показывается только у свёрнутых по-настоящему.
-function measureClamps(root) {
-    for (const item of root.querySelectorAll('.item.clamp')) {
-        const text = item.firstElementChild;
-        if (text.offsetParent !== null) {
-            item.classList.toggle('overflows', text.scrollHeight > text.clientHeight + 1);
-        }
-    }
-}
-
-function highlight(root, query) {
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-        acceptNode: node => node.parentElement.closest('.item-text, .card-title, .card-sub')
-            ? NodeFilter.FILTER_ACCEPT
-            : NodeFilter.FILTER_REJECT,
-    });
-    const nodes = [];
-    while (walker.nextNode()) {
-        nodes.push(walker.currentNode);
-    }
-    for (const node of nodes) {
-        const text = node.nodeValue;
-        // Строчные буквы и «ё» → «е» не меняют длину строки, поэтому позиции совпадают.
-        const lower = text.toLowerCase().replace(/ё/g, 'е');
-        let at = lower.indexOf(query);
-        if (at < 0) {
-            continue;
-        }
-        const fragment = document.createDocumentFragment();
-        let from = 0;
-        while (at >= 0) {
-            fragment.append(text.slice(from, at));
-            const mark = document.createElement('mark');
-            mark.textContent = text.slice(at, at + query.length);
-            fragment.append(mark);
-            from = at + query.length;
-            at = lower.indexOf(query, from);
-        }
-        fragment.append(text.slice(from));
-        node.replaceWith(fragment);
-    }
-}
-
-// ---------- Даты ----------
-
-function parseIso(iso) {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
-    return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
-}
-
-function daysAgo(date) {
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    return Math.round((today - date) / 86400000);
-}
-
-function relative(date) {
-    const n = daysAgo(date);
-    if (n === 0) {
-        return 'сегодня';
-    }
-    if (n === 1) {
-        return 'вчера';
-    }
-    if (n === 2) {
-        return 'позавчера';
-    }
-    if (n > 2 && n < 7) {
-        return `${n} ${plural(n, 'день', 'дня', 'дней')} назад`;
-    }
-    return '';
-}
-
-function formatDate(iso) {
-    const date = parseIso(iso);
-    if (!date) {
-        return iso;
-    }
-    const year = date.getFullYear() !== new Date().getFullYear() ? ` ${date.getFullYear()}` : '';
-    return `${date.getDate()} ${monthGenitive(date.getMonth())}${year}`;
-}
-
-function whenLong(iso) {
-    const date = parseIso(iso);
-    const near = date ? relative(date) : '';
-    return near && near.endsWith('назад') ? `${formatDate(iso)}, ${near}` : near || formatDate(iso);
-}
-
-// ---------- Установка на телефон ----------
-
-function isStandalone() {
-    return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-}
-
-function isIos() {
-    return /iphone|ipad|ipod/i.test(navigator.userAgent)
-        || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-}
-
-function isAndroid() {
-    return /android/i.test(navigator.userAgent);
-}
-
-// ---------- Мелочи ----------
-
-let toastTimer = 0;
-
-function toast(text) {
-    const el = $('.toast');
-    el.textContent = text;
-    el.hidden = false;
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => {
-        el.hidden = true;
-    }, 2400);
-}
-
-function followHash() {
-    const id = decodeURIComponent(location.hash.slice(1));
-    const target = id && document.getElementById(id);
-    if (!target) {
-        return;
-    }
-    const head = target.querySelector('[data-toggle]');
-    if (head && head.getAttribute('aria-expanded') !== 'true') {
-        head.click();
-    }
-    target.scrollIntoView({ block: 'start' });
-}
-
-// После смены отбора лента начинается сверху: иначе найденное оставалось где-то выше экрана.
-function scrollToFeedTop() {
-    const top = $('[data-feed]').getBoundingClientRect().top + scrollY - $('.toolbar').offsetHeight - 8;
-    if (scrollY > top) {
-        scrollTo({ top });
-    }
-}
-
-function scrollToFresh() {
-    const card = $('.card.fresh');
-    if (!card) {
-        return;
-    }
-    // Первая карточка дня — вместе с датой над ней: без даты непонятно, когда это было.
-    const day = card.closest('.day');
-    const target = day && day.querySelector('.card') === card ? day : card;
-    target.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
-}
-
-async function share() {
-    const url = location.href.split('#')[0];
-    if (navigator.share) {
-        try {
-            await navigator.share({ title: 'HTV — дневник разработки', url });
-        } catch {
-            // Отменили: ничего не делаем.
-        }
-        return;
-    }
-    try {
-        await navigator.clipboard.writeText(url);
-        toast('Ссылка скопирована');
-    } catch {
-        toast(url);
-    }
-}
-
-const ICON_CLOSE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>';
-const ICON_SHARE = '<svg class="inline-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3"/><path d="m7 8 5-5 5 5"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>';
-
 // ---------- События ----------
 
 function wire() {
-    $('.refresh').addEventListener('click', () => load({ manual: true }));
+    $('.refresh').addEventListener('click', () => refreshAll({ manual: true }));
 
-    $('[data-chips]').addEventListener('click', event => {
-        const chip = event.target.closest('[data-filter]');
-        if (!chip || !state.doc) {
+    $('.tabbar').addEventListener('click', event => {
+        const tab = event.target.closest('[data-tab]');
+        if (!tab) {
             return;
         }
-        const scroll = $('[data-chips]').scrollLeft;
-        state.filter = chip.dataset.filter;
-        renderChips();
-        $('[data-chips]').scrollLeft = scroll;
-        renderFeed();
-        scrollToFeedTop();
-    });
-    $('[data-chips]').addEventListener('scroll', markChipsScroll, { passive: true });
-
-    const toggle = $('.search-toggle');
-    const box = $('.search');
-    const input = $('.search input');
-    let typing = 0;
-    toggle.addEventListener('click', () => {
-        const opening = box.hidden;
-        box.hidden = !opening;
-        toggle.setAttribute('aria-expanded', String(opening));
-        if (opening) {
-            input.focus();
-        } else if (state.query) {
-            input.value = '';
-            state.query = '';
-            if (state.doc) {
-                renderFeed();
-            }
+        if (tab.dataset.tab === app.tab) {
+            scrollTo({ top: 0, behavior: reducedMotion() ? 'auto' : 'smooth' });
+            return;
         }
-    });
-    input.addEventListener('input', () => {
-        clearTimeout(typing);
-        typing = setTimeout(() => {
-            state.query = input.value;
-            if (state.doc) {
-                renderFeed();
-                scrollToFeedTop();
-            }
-        }, 150);
-    });
-    input.addEventListener('keydown', event => {
-        if (event.key === 'Escape') {
-            toggle.click();
-        } else if (event.key === 'Enter') {
-            input.blur();
-        }
+        buzz(8);
+        navigate(tab.dataset.tab);
     });
 
     document.addEventListener('click', async event => {
-        const head = event.target.closest('[data-toggle]');
-        if (head) {
-            const open = head.getAttribute('aria-expanded') !== 'true';
-            head.setAttribute('aria-expanded', String(open));
-            const body = document.getElementById(head.getAttribute('aria-controls'));
-            body.hidden = !open;
-            if (open) {
-                state.open.add(head.dataset.toggle);
-                measureClamps(body);
-            } else {
-                state.open.delete(head.dataset.toggle);
-            }
-            return;
-        }
-
-        const clamped = event.target.closest('.item.clamp.overflows');
-        if (clamped) {
-            clamped.classList.remove('clamp');
-            return;
-        }
-
         const action = event.target.closest('[data-action]');
         if (!action) {
             return;
         }
         switch (action.dataset.action) {
-            case 'show-fresh':
-                scrollToFresh();
+            case 'settings':
+                closeSheet();
+                openSettings();
+                break;
+            case 'close-sheet':
+                closeSheet();
+                break;
+            case 'open-tab':
+                closeSheet();
+                navigate(action.dataset.tabTarget, action.dataset.arg || '');
+                break;
+            case 'whats-new':
+                closeSheet();
+                setTimeout(() => openSheet(whatsNewHtml()), reducedMotion() ? 0 : 230);
+                break;
+            case 'share-app':
+                share();
+                break;
+            case 'mark-all-seen':
+                markAllSeen();
+                toast('Всё отмечено прочитанным');
+                break;
+            case 'test-push':
+                action.disabled = true;
+                try {
+                    await testPush();
+                    toast('Отправлено — уведомление придёт через пару секунд');
+                } catch {
+                    toast('Не получилось: нет связи с сервером');
+                }
+                action.disabled = false;
                 break;
             case 'close-install':
                 store.set(INSTALL_KEY, true);
                 renderNotices();
                 break;
+            case 'close-push-prompt':
+                store.set(PUSH_PROMPT_KEY, true);
+                renderNotices();
+                break;
             case 'install':
-                if (state.installPrompt) {
-                    state.installPrompt.prompt();
-                    const choice = await state.installPrompt.userChoice.catch(() => null);
-                    state.installPrompt = null;
+                if (app.installPrompt) {
+                    app.installPrompt.prompt();
+                    const choice = await app.installPrompt.userChoice.catch(() => null);
+                    app.installPrompt = null;
                     if (choice && choice.outcome === 'accepted') {
                         store.set(INSTALL_KEY, true);
                     }
                     renderNotices();
                 }
                 break;
-            case 'reset':
-                state.filter = 'all';
-                state.query = '';
-                input.value = '';
-                renderChips();
-                renderFeed();
-                break;
-            case 'retry':
-                load({ manual: true });
-                break;
         }
     });
 
-    const shareButton = $('.share');
-    shareButton.hidden = false;
-    shareButton.addEventListener('click', share);
-
-    let resizeTimer = 0;
-    addEventListener('resize', () => {
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => {
-            measureClamps(document);
-            markChipsScroll();
-        }, 200);
+    document.addEventListener('change', event => {
+        if (event.target.matches('[data-topic]')) {
+            onTopicToggle(event.target);
+        }
     });
 
-    addEventListener('hashchange', followHash);
+    $('[data-sheet-backdrop]').addEventListener('click', closeSheet);
+    addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+            closeSheet();
+        }
+    });
+    wireSheetDrag();
+
+    addEventListener('popstate', route);
+    addEventListener('hashchange', route);
 
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
             scheduleSeen();
-            if (Date.now() - state.fetchedAt > REFRESH_AFTER_MS) {
-                load();
+            clearBadge();
+            if (feedIsStale()) {
+                refreshAll();
             }
+            renderDots();
         } else {
-            clearTimeout(seenTimer);
+            pauseSeen();
         }
     });
 
     addEventListener('beforeinstallprompt', event => {
         event.preventDefault();
-        state.installPrompt = event;
+        app.installPrompt = event;
         renderNotices();
     });
     addEventListener('appinstalled', () => {
-        state.installPrompt = null;
+        app.installPrompt = null;
         store.set(INSTALL_KEY, true);
         renderNotices();
     });
 
     if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
         navigator.serviceWorker.register('sw.js').catch(() => {});
+        // Нажатие на уведомление при открытом приложении: работник просит открыть адрес.
+        navigator.serviceWorker.addEventListener('message', event => {
+            const data = event.data || {};
+            if (data.type === 'open' && data.url) {
+                const target = new URL(data.url, location.href);
+                history.replaceState(null, '', target.pathname + target.search + target.hash);
+                route();
+            }
+        });
     }
 }
 
-wire();
-load();
+function clearBadge() {
+    if (navigator.clearAppBadge) {
+        navigator.clearAppBadge().catch(() => {});
+    }
+}
+
+async function start() {
+    wire();
+    route();
+    clearBadge();
+
+    // «Что нового» — после настроек уведомлений: пока сервера нет, лист о них не обещает.
+    loadPushConfig().then(async () => {
+        await refreshPushState();
+        renderNotices();
+        maybeShowWhatsNew();
+        resyncPush();
+    });
+
+    await Promise.all([
+        initFeed({
+            extraNotices,
+            onLoaded: () => {
+                renderDots();
+                for (const id of app.mounted) {
+                    const view = TABS[id].view;
+                    if (view && view.update) {
+                        view.update(viewElement(id), ctx, 'feed');
+                    }
+                }
+                // Переход по ссылке на карточку ленты возможен только после её отрисовки.
+                const { tab, arg } = parseHash();
+                if (tab === 'feed' && arg) {
+                    followFeedAnchor(arg);
+                }
+            },
+            onSeen: () => {
+                renderDots();
+                clearBadge();
+            },
+        }),
+        loadRoadmap(),
+        loadFacts(),
+    ]);
+}
+
+start();

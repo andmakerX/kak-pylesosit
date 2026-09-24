@@ -1,7 +1,7 @@
 {
   "name": "HTV — дневник разработки",
   "short_name": "HTV",
-  "description": "HTV — дневник разработки игры «Как пылесосить»: каждое обновление сразу после того, как оно сделано.",
+  "description": "HTV — дневник разработки игры «Как пылесосить»: обновления, планы, факт дня и приколы.",
   "lang": "ru",
   "dir": "ltr",
   "id": "./",
@@ -11,10 +11,15 @@
   "orientation": "portrait",
   "background_color": "#16181e",
   "theme_color": "#16181e",
-  "categories": ["games", "news"],
+  "categories": ["games", "news", "entertainment"],
   "icons": [
     { "src": "icons/htv-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "icons/htv-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "icons/htv-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Факт дня", "url": "./#facts", "icons": [{ "src": "icons/htv-192.png", "sizes": "192x192" }] },
+    { "name": "Планы", "url": "./#plans", "icons": [{ "src": "icons/htv-192.png", "sizes": "192x192" }] },
+    { "name": "Приколы", "url": "./#fun", "icons": [{ "src": "icons/htv-192.png", "sizes": "192x192" }] }
   ]
 }
