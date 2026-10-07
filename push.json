@@ -1,4 +1,4 @@
 {
-  "server": "",
-  "vapidPublicKey": ""
+  "server": "https://htv-push.kak-pylesosit.workers.dev",
+  "vapidPublicKey": "BPChWR-RLQSpJF4cpgS8q-DDFyah9isdsP4G8TBcl602b3HyfqXD1ny5QDDPuDUoJwLCwqw3uwa8PIIqJfTBFSM"
 }
