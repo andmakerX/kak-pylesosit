@@ -911,6 +911,33 @@ mark {
     transform: translateX(-50%);
 }
 
+.post-gallery {
+    margin: 0 0 24px;
+}
+.gallery-hint { color: var(--ink-faint); font-size: 14px; }
+.gallery-strip { display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 12px; }
+.post-gallery figure { margin: 0; min-width: 0; flex: 0 0 min(82%, 380px); scroll-snap-align: start; }
+.post-gallery a { display: block; border-radius: 14px; overflow: hidden; }
+.post-gallery img { display: block; width: 100%; height: auto; background: #3d4044; }
+.post-gallery figcaption { margin-top: 8px; font-size: 14px; color: var(--ink-faint); }
+.photo-viewer { padding: 0; border: 0; width: 100vw; height: 100dvh; max-width: 100vw; max-height: 100dvh; background: #171b21; color: #f4f1ea; }
+.photo-viewer[open] { display: flex; flex-direction: column; }
+.photo-viewer::backdrop { background: #111; }
+.photo-toolbar, .photo-footer { display: flex; align-items: center; gap: 12px; padding: 12px max(12px, env(safe-area-inset-right)) 12px max(12px, env(safe-area-inset-left)); }
+.photo-toolbar { padding-top: max(12px, env(safe-area-inset-top)); }
+.photo-toolbar span { margin-right: auto; white-space: nowrap; }
+.photo-viewer button { background: #303844; color: #fff; border: 1px solid #657084; border-radius: 10px; min-height: 44px; padding: 8px 12px; cursor: pointer; }
+.photo-viewer button:focus-visible { outline: 3px solid #ff9c38; outline-offset: 2px; }
+.photo-stage { flex: 1; min-height: 0; overflow: auto; text-align: center; touch-action: pan-y pinch-zoom; }
+.photo-stage > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.photo-stage.is-zoomed { touch-action: auto; }
+.photo-stage.is-zoomed > img { width: 200%; height: auto; max-width: none; }
+.photo-footer p { flex: 1; text-align: center; margin: 0; font-size: 14px; }
+.photo-thumbs { display: flex; gap: 8px; overflow-x: auto; flex-shrink: 0; padding: 8px 12px max(12px, env(safe-area-inset-bottom)); }
+.photo-thumbs button { flex: 0 0 64px; padding: 0; overflow: hidden; opacity: .6; }
+.photo-thumbs button[aria-current="true"] { opacity: 1; border: 2px solid #ff9c38; }
+.photo-thumbs img { display: block; width: 60px; height: 60px; object-fit: cover; }
+
 .noscript {
     margin: 24px 16px;
     text-align: center;

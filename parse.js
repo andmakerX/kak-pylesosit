@@ -33,7 +33,7 @@ export function parseChangelog(text) {
     let i = 0;
 
     const openGroup = () => {
-        group = { title: '', subtitle: '', header: '', notes: [], sections: [] };
+        group = { title: '', subtitle: '', header: '', notes: [], images: [], sections: [] };
         day.groups.push(group);
         section = null;
         return group;
@@ -77,6 +77,13 @@ export function parseChangelog(text) {
             continue;
         }
 
+        m = /^!\[([^\]]*)\]\((media\/[a-zA-Z0-9/_-]+\.(?:png|jpg|jpeg|webp))\)\s*$/.exec(line);
+        if (m && day && group) {
+            group.images.push({ alt: m[1], src: m[2] });
+            i++;
+            continue;
+        }
+
         m = /^[-*]\s+(.*)$/.exec(line);
         if (m) {
             const parts = [m[1]];
@@ -101,7 +108,7 @@ export function parseChangelog(text) {
 
         const parts = [line.trim()];
         i++;
-        while (i < lines.length && lines[i].trim() && !/^(#{1,3}\s|[-*]\s)/.test(lines[i])) {
+        while (i < lines.length && lines[i].trim() && !/^(#{1,3}\s|[-*]\s|!\[)/.test(lines[i])) {
             parts.push(lines[i].trim());
             i++;
         }

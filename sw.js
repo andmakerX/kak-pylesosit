@@ -5,7 +5,7 @@
 
 // Новое имя кэша при смене иконок или оболочки: при включении работник удаляет прежний кэш,
 // и телефон не показывает старую иконку из него.
-const CACHE = 'news-v4';
+const CACHE = 'news-v5';
 const SHELL = [
     './',
     'index.html',
@@ -13,6 +13,7 @@ const SHELL = [
     'views.css',
     'app.js',
     'feed.js',
+    'gallery.js',
     'shared.js',
     'parse.js',
     'roadmap.js',
@@ -30,6 +31,16 @@ const SHELL = [
     'icons/htv-192.png',
     'icons/htv-apple-180.png',
     'icons/htv-badge-96.png',
+    'media/player/three-quarter.jpg',
+    'media/player/front.jpg',
+    'media/player/right.jpg',
+    'media/player/back.jpg',
+    'media/player/left.jpg',
+    'media/player/face.jpg',
+    'media/player/vacuum-grip.jpg',
+    'media/player/tank-grip.jpg',
+    'media/player/backpack.jpg',
+    'media/player/boots.jpg',
 ];
 
 self.addEventListener('install', event => {

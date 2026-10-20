@@ -6,6 +6,7 @@ import {
     KIND_ORDER, escapeHtml, inlineHtml, monthGenitive, parseChangelog, plural, searchable, stats,
 } from './parse.js';
 import { store, toast, parseIso, relative, formatDate, whenLong, WEEKDAYS } from './shared.js';
+import { galleryHtml, initGallery } from './gallery.js';
 
 const SOURCE = 'changelog.md';
 const SEEN_KEY = 'news.seen';
@@ -333,6 +334,7 @@ function cardHtml(group, view, filtering, searching) {
             <ul class="items">${items.map(item => itemHtml(item, searching)).join('')}</ul>
         </section>`).join('');
     const notes = filtering ? '' : group.notes.map(note => `<p class="card-note">${inlineHtml(note)}</p>`).join('');
+    const gallery = galleryHtml(group.images);
 
     return `
         <article class="card${fresh ? ' fresh' : ''}" id="${id}">
@@ -346,7 +348,7 @@ function cardHtml(group, view, filtering, searching) {
                     <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
                 </button>
             </h3>
-            <div class="card-body" id="${id}-body"${open ? '' : ' hidden'}>${sections}${notes}</div>
+            <div class="card-body" id="${id}-body"${open ? '' : ' hidden'}>${gallery}${sections}${notes}</div>
         </article>`;
 }
 
@@ -479,6 +481,7 @@ function scrollToFresh() {
 export function initFeed(options) {
     hooks = { ...hooks, ...options };
     const view = $('[data-view="feed"]');
+    initGallery(view);
 
     $('[data-chips]').addEventListener('click', event => {
         const chip = event.target.closest('[data-filter]');
